@@ -1,0 +1,1441 @@
+---
+title: "Algorithms from scratch using Gradient Descent to predict average GPU Run Time & classify it’s run type"
+author: "Sarthak Mohapatra"
+date: "1/29/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(scipen = 999)
+```
+
+```{r load-packages}
+pacman::p_load(data.table, forecast, leaps, tidyverse, caret, corrplot, glmnet, mlbench, ggplot2, gplots, pivottabler,MASS,
+               e1071, fpp2, gains, pROC, knitr, gplots, FNN, RColorBrewer, viridis, cowplot, ggpubr, gridExtra, rlist, d3heatmap)
+```
+
+```{r dataloading, echo=FALSE}
+getwd()
+gpu.df <- read.csv("sgemm_product.csv")
+
+str(gpu.df)
+head(gpu.df)
+
+
+names(gpu.df)[15] = "Run1"
+names(gpu.df)[16] = "Run2"
+names(gpu.df)[17] = "Run3"
+names(gpu.df)[18] = "Run4"
+
+head(gpu.df)
+
+
+gpu.df$Average <- (gpu.df$Run1 + gpu.df$Run2 + gpu.df$Run3 + gpu.df$Run4) / 4
+
+head(gpu.df)
+summary(gpu.df)
+```
+
+```{r data-partitioning}
+set.seed(16)
+##
+## randomly order the dataset
+##
+rows <- sample(nrow(gpu.df))
+gpu  <- gpu.df[rows, -15:-18]
+##
+## find rows to split on
+##
+split <- round(nrow(gpu) * 0.7)
+gpu.train.df <- gpu[1:split, ]
+gpu.test.df  <- gpu[(split+1):nrow(gpu), ]
+##
+## confirm the size of the split
+##
+round(nrow(gpu.train.df)/nrow(gpu), digits = 3)
+head(gpu.train.df)
+head(gpu.test.df)
+##
+## Normalizing the dataset.
+##
+gpu_train_norm         <- gpu.train.df
+gpu_test_norm          <- gpu.test.df
+gpu_norm_df            <- gpu
+
+norm.values            <- preProcess(gpu.train.df[, 1:15], method=c("center", "scale"))
+gpu_train_norm[, 1:15] <- predict(norm.values, gpu.train.df[, 1:15])
+gpu_test_norm[, 1:15]  <- predict(norm.values, gpu.test.df[, 1:15])
+gpu_norm_df[, 1:15]    <- predict(norm.values, gpu[, 1:15])
+new.gpu.norm.df        <- predict(norm.values, gpu)
+
+corrplot(cor(gpu_norm_df[]), method = "color", type = "lower", order = "hclust", tl.srt = 45)
+
+##
+##
+##
+x_gpu_train <- as.matrix(gpu_train_norm[c(1:14)])
+y_gpu_train <- as.matrix(gpu_train_norm[c('Average')])
+
+x_gpu_test  <- as.matrix(gpu_test_norm[c(1:14)])
+y_gpu_test  <- as.matrix(gpu_test_norm[c('Average')])
+
+x_gpu_train <- cbind(Intercept=1,x_gpu_train) 
+head(x_gpu_train)
+head(y_gpu_train)
+x_gpu_test  <- cbind(Intercept=1, x_gpu_test)
+head(x_gpu_test)
+length(y_gpu_train)
+length(y_gpu_test)
+
+```
+
+```{r EDA}
+cd <- gpu.df %>%
+group_by(VWM) %>%
+summarise(MWG = mean(MWG), NWG = mean(NWG), KWG = mean(KWG), MDIMC = mean(MDIMC), NDIMC = mean(NDIMC), MDIMA = mean(MDIMA), NDIMB = mean(NDIMB), AvgRunTime = mean(Average))
+cd
+
+ce <- gpu.df %>%
+group_by(VWN) %>%
+summarise(MWG = mean(MWG), NWG = mean(NWG), KWG = mean(KWG), MDIMC = mean(MDIMC), NDIMC = mean(NDIMC), MDIMA = mean(MDIMA), NDIMB = mean(NDIMB), AvgRunTime = mean(Average))
+ce
+
+cf <- gpu.df %>%
+group_by(STRM) %>%
+summarise(AvgRunTime = mean(Average))
+cf
+
+cg <- gpu.df %>%
+group_by(STRN) %>%
+summarise(AvgRunTime = mean(Average))
+cg
+
+ch <- gpu.df %>%
+group_by(SA) %>%
+summarise(AvgRunTime = mean(Average))
+ch
+
+ci <- gpu.df %>%
+group_by(SB) %>%
+summarise(Avg = mean(Average))
+ci
+
+cd <- as.data.frame(cd)
+ce <- as.data.frame(ce)
+cf <- as.data.frame(cf)
+cg <- as.data.frame(cg)
+ch <- as.data.frame(ch)
+ci <- as.data.frame(ci)
+```
+
+
+```{r visualization}
+
+corrplot(cor(gpu.df[c(-15:-18)]), method = "color", type = "lower", order = "hclust", tl.srt = 45)
+
+colmain <- col<- colorRampPalette(c("red","skyblue","blue"))(822)
+heatmap.2(cor(gpu.df[c(-15:-18)]), col=colmain, cellnote = round(cor(gpu.df[c(-15:-18)]),2), dendrogram = "none",
+           key = FALSE, trace = "none", margins = c(10,10), notecol = "black", main='Heat Map')
+
+hist(gpu.df$Average, col='darkgreen', border='black', main='Distribution of Average Run Time.', xlab = 'Number of occurances.', ylab = 'Avg. Run Time Value.')
+hist(log(gpu.df$Average), col='darkgreen', border='black', main='Distribution of Average Run Time.', xlab = 'Number of occurances.', ylab = 'Avg. Run Time Value.')
+
+
+colors = c("skyblue2","blue4")
+colors2 = c("skyblue1","skyblue3","blue3","black")
+
+barplot(as.matrix(cd),beside=TRUE, cex.lab=1.0, cex.main=1.4, col=colors2, xlab='Feature names - factored based on VWM', ylab='Mean Value of Features', main='Effect of VWM on various Features.')
+legend("topleft",c("VWM=1","VWM=2","VWM=4","VWM=8"),cex=1.0, bty='y', fill=colors2 )
+
+barplot(as.matrix(ce),beside=TRUE, cex.lab=1.0, cex.main=1.4, col=colors2, xlab='Feature names - factored based on VWN', ylab='Mean Value of Features', main='Effect of VWN on various Features.')
+legend("topleft",c("VWN=1","VWN=2","VWN=4","VWN=8"),cex=1.0, bty='y', fill=colors2 )
+
+par(mfrow=c(2,2))
+barplot(as.matrix(cf),beside=TRUE, cex.lab=1.0, cex.main=1.0, col=colors, xlab='Feature names - factored based on STRM', ylab='Mean Value of Features', main='Effect of STRM on various Features.')
+legend("topleft",c("STRM=0","STRM=1"),cex=0.8, bty='n', fill=colors )
+
+barplot(as.matrix(cg),beside=TRUE, cex.lab=1.0, cex.main=1.0, col=colors, xlab='Feature names - factored based on STRN', ylab='Mean Value of Features', main='Effect of STRN on various Features.')
+legend("topleft",c("STRN=0","STRN=1"),cex=0.8, bty='n', fill=colors )
+
+barplot(as.matrix(ch),beside=TRUE, cex.lab=1.0, cex.main=1.0, col=colors, xlab='Feature names - factored based on SA', ylab='Mean Value of Features', main='Effect of SA on various Features.')
+legend("topleft",c("SA=0","SA=1"),cex=0.8, bty='n', fill=colors )
+
+barplot(as.matrix(ci),beside=TRUE, cex.lab=1.0, cex.main=1.0, col=colors, xlab='Feature names - factored based on SB', ylab='Mean Value of Features', main='Effect of SB on various Features.')
+legend("topleft",c("SB=0","SB=1"),cex=0.8, bty='n', fill=colors )
+
+par(mfrow=c(2,2))
+plot(gpu.df$MWG, gpu.df$Average, main = 'Average Run Time ~ MWG', xlab = 'MWG', ylab = 'Average Run Time', col=factor(gpu.df$MWG), pch=18)
+plot(gpu.df$NWG, gpu.df$Average, main = 'Average Run Time ~ NWG', xlab = 'NWG', ylab = 'Average Run Time', col=factor(gpu.df$NWG), pch=18)
+plot(gpu.df$KWG, gpu.df$Average, main = 'Average Run Time ~ KWG', xlab = 'KWG', ylab = 'Average Run Time', col=factor(gpu.df$KWG), pch=18)
+plot(gpu.df$KWI, gpu.df$Average, main = 'Average Run Time ~ KWI', xlab = 'KWI', ylab = 'Average Run Time', col=factor(gpu.df$KWI), pch=18)
+
+par(mfrow=c(2,2))
+plot(gpu.df$MDIMC, gpu.df$Average, main = 'Average Run Time ~ MDIMC', xlab = 'MDIMC', ylab = 'Average Run Time', col=factor(gpu.df$MDIMC), pch=18)
+plot(gpu.df$NDIMC, gpu.df$Average, main = 'Average Run Time ~ NDIMC', xlab = 'NDIMC', ylab = 'Average Run Time', col=factor(gpu.df$NDIMC), pch=18)
+plot(gpu.df$MDIMA, gpu.df$Average, main = 'Average Run Time ~ MDIMA', xlab = 'MDIMA', ylab = 'Average Run Time', col=factor(gpu.df$MDIMA), pch=18)
+plot(gpu.df$NDIMB, gpu.df$Average, main = 'Average Run Time ~ NDIMB', xlab = 'NDIMB', ylab = 'Average Run Time', col=factor(gpu.df$NDIMB), pch=18)
+
+```
+
+
+
+```{r regression-gradient-descent, warning=False}
+##
+## Here, we are defining the Gradient Descent algorithm. First, we are declaring the variables to store cost, beta co-efficients, predicted target variable value and error.
+##
+gradient_descent <- function(x, y, alpha, m, beta, thold)
+{
+    cost_iter  <<- list()
+    beta_iter  <<- matrix(0,nrow=m,ncol=15)
+    yhat_iter  <<- list()
+    error_iter <<- list()
+##
+## We are iterating over the matrices with te goal of minimizing the cost function value.
+##
+    for (i in 1:10000){
+      
+      yhat <- as.matrix(x) %*% beta_value                                                               ## Predictions of target variable.
+      yhat_iter[i] <- yhat                                                                              ## Storing the predicted value.               
+      
+      error <- yhat - y                                                                                 ## Calculating the error value.
+      error_iter[i] <- error                                                                            ## Storing the error value.
+      
+      cost <- (1/(2*m)) * (t(error) %*% error)                                                          ## Calculating the cost function value.
+      cost_iter[i] <- cost                                                                              ## storing the cost function value.
+      
+      beta_value <- beta_value - (alpha * (1/m) * (t(x) %*% (yhat - y)))                                ## Calculating the new beta coefficinets values.
+      beta_iter[i,1:15] <- t(beta_value)                                                                ## storing the beta coefficients value.
+      
+
+      if ((i > 1) && ((cost_iter[[i-1]] - cost_iter[[i]]) < thold)) {
+        print('Threshold reached')
+        break
+        }
+      }
+    
+    final_val <- list(cost_iter, beta_iter, yhat_iter, error_iter)                                      ## Storing the variables in a single variable so that it can be returned.
+    return (final_val)                                                                                  ## Returning the values.
+    
+}
+```
+
+
+```{r linear-reg-test-predict, warning=False}
+
+linear_test_predict <- function(beta_conv_iter, x_gpu_test, y_gpu_test) 
+  {
+  yhat_test  <- as.matrix(x_gpu_test) %*% beta_conv_iter
+
+  error_test <- yhat_test - y_gpu_test
+
+  cost_test  <- (1/(2*length(y_gpu_test))) * sum(t(error_test) %*% error_test)
+
+  test_val <- list(yhat_test, error_test, cost_test)
+  
+  return(test_val)
+}
+
+```
+
+
+```{r calling-grad-function, warning=False}
+##
+## First, let's define the initial values of beta-i (slope) and beta-0 (y intercept)
+##
+
+main_function <- function(alpha, m, beta_value, thold){
+cost_return_train  <- list()
+beta_return_train  <- list()
+yhat_return_train  <- list()
+final_return_train <- list()
+
+cost_return_test   <- list()
+yhat_return_test   <- list()
+error_return_test  <- list()
+
+final              <- list()
+final_test         <- list()
+
+  
+final <- gradient_descent(x_gpu_train, y_gpu_train, alpha, m, beta, thold)
+
+cost_return_train  <- final[[1]]
+beta_return_train  <- final[[2]]
+yhat_return_train  <- final[[3]]
+error_return_train <- final[[4]]
+
+
+conv_iter <- length(cost_return_train)
+conv_iter
+#dim(beta_return_train)
+beta_conv_iter <- beta_return_train[conv_iter,1:15]
+beta_conv_iter
+cost_return_train[conv_iter]
+
+final_test <- linear_test_predict(beta_conv_iter, x_gpu_test, y_gpu_test)
+
+cost_return_test <- final_test[[3]]
+yhat_return_test <- final_test[[1]]
+error_return_test <- final_test[[2]]
+
+cost_return_test
+
+cost_result <- list(cost_return_train, cost_return_test, conv_iter)
+return(cost_result)
+
+}
+```
+
+```{r experimentation-linear-alpha, warning=False}
+alpha_range <- matrix(c(0.01, 0.001, 0.0001, 0.00001))
+
+thold = 0.000001
+
+alpha <- 0.00001
+m <- nrow(gpu.train.df)
+beta_value <<- rep(0,15)
+cost_return <- main_function(alpha, m, beta_value, thold)
+cost_return_train <- cost_return[[1]]
+cost_return_test  <- cost_return[[2]]
+conv_iter <- cost_return[[3]]
+cost_train_0.00001_a <- cost_return_train
+cost_train_min_0.00001_a <- cost_return_train[conv_iter]
+cost_test_0.00001_a <- cost_return_test
+
+alpha <- 0.0001
+m <- nrow(gpu.train.df)
+beta_value <<- rep(0,15)
+cost_return <- main_function(alpha, m, beta_value, thold)
+cost_return_train <- cost_return[[1]]
+cost_return_test  <- cost_return[[2]]
+conv_iter <- cost_return[[3]]
+cost_train_0.0001_a <- cost_return_train
+cost_train_min_0.0001_a <- cost_return_train[conv_iter]
+cost_test_0.0001_a <- cost_return_test
+
+alpha <- 0.001
+m <- nrow(gpu.train.df)
+beta_value <<- rep(0,15)
+cost_return <- main_function(alpha, m, beta_value, thold)
+cost_return_train <- cost_return[[1]]
+cost_return_test  <- cost_return[[2]]
+conv_iter <- cost_return[[3]]
+cost_train_0.001_a <- cost_return_train
+cost_train_min_0.001_a <- cost_return_train[conv_iter]
+cost_test_0.001_a <- cost_return_test
+
+alpha <- 0.01
+m <- nrow(gpu.train.df)
+beta_value <<- rep(0,15)
+cost_return <- main_function(alpha, m, beta_value, thold)
+cost_return_train <- cost_return[[1]]
+cost_return_test  <- cost_return[[2]]
+conv_iter <- cost_return[[3]]
+cost_train_0.01_a <- cost_return_train
+cost_train_min_0.01_a <- cost_return_train[conv_iter]
+cost_test_0.01_a <- cost_return_test
+
+cost_train_all_a <- matrix(c(cost_train_min_0.01_a,cost_train_min_0.001_a,cost_train_min_0.0001_a,cost_train_min_0.00001_a))
+cost_test_all_a <- matrix(c(cost_test_0.01_a,cost_test_0.001_a,cost_test_0.0001_a,cost_test_0.00001_a))
+
+```
+
+```{r experimentation-linear-threshold, warning=False}
+threshold_range <- matrix(c(0.00001, 0.000001, 0.0000001))
+
+alpha <- 0.0001
+
+thold = 0.0000001
+m <- nrow(gpu.train.df)
+beta_value <<- rep(0,15)
+cost_return <- main_function(alpha, m, beta_value, thold)
+cost_return_train <- cost_return[[1]]
+cost_return_test  <- cost_return[[2]]
+conv_iter <- cost_return[[3]]
+cost_train_0.0001_t <- cost_return_train
+cost_train_min_0.0001_t <- cost_return_train[conv_iter]
+cost_test_0.0001_t <- cost_return_test
+
+thold = 0.000001
+m <- nrow(gpu.train.df)
+beta_value <<- rep(0,15)
+cost_return <- main_function(alpha, m, beta_value, thold)
+cost_return_train <- cost_return[[1]]
+cost_return_test  <- cost_return[[2]]
+conv_iter <- cost_return[[3]]
+cost_train_0.001_t <- cost_return_train
+cost_train_min_0.001_t <- cost_return_train[conv_iter]
+cost_test_0.001_t <- cost_return_test
+
+thold = 0.00001
+m <- nrow(gpu.train.df)
+beta_value <<- rep(0,15)
+cost_return <- main_function(alpha, m, beta_value, thold)
+cost_return_train <- cost_return[[1]]
+cost_return_test  <- cost_return[[2]]
+conv_iter <- cost_return[[3]]
+cost_train_0.01_t <- cost_return_train
+cost_train_min_0.01_t <- cost_return_train[conv_iter]
+cost_test_0.01_t <- cost_return_test
+
+cost_train_all_t <- matrix(c(cost_train_min_0.01_t,cost_train_min_0.001_t,cost_train_min_0.0001_t))
+cost_test_all_t <- matrix(c(cost_test_0.01_t,cost_test_0.001_t,cost_test_0.0001_t))
+
+#cost_train_all_t <- matrix(c(cost_train_0.01_t,cost_train_0.001_t,cost_train_0.0001_t,cost_train_0.00001_t))
+#cost_test_all_t <- matrix(c(cost_test_0.01_t,cost_test_0.001_t,cost_test_0.0001_t,cost_test_0.00001_t))
+```
+
+```{r exp2-2ndques, warning=False}
+
+thold = 0.000001
+
+cost_return_train  <- list()
+beta_return_train  <- list()
+yhat_return_train  <- list()
+final_return_train <- list()
+
+cost_return_test   <- list()
+yhat_return_test   <- list()
+error_return_test  <- list()
+
+final              <- list()
+final_test         <- list()
+
+gradient_descent <- function(x, y, alpha, m, beta, thold)
+{
+    cost_iter  <<- list()
+    beta_iter  <<- matrix(0,nrow=m,ncol=15)
+    yhat_iter  <<- list()
+    error_iter <<- list()
+##
+## We are iterating over the matrices with te goal of minimizing the cost function value.
+##
+    for (i in 1:10000){
+      
+      yhat <- as.matrix(x) %*% beta_value                                                               ## Predictions of target variable.
+      yhat_iter[i] <- yhat                                                                              ## Storing the predicted value.               
+      
+      error <- yhat - y                                                                                 ## Calculating the error value.
+      error_iter[i] <- error                                                                            ## Storing the error value.
+      
+      cost <- (1/(2*m)) * (t(error) %*% error)                                                          ## Calculating the cost function value.
+      cost_iter[i] <- cost                                                                              ## storing the cost function value.
+      
+      beta_value <- beta_value - (alpha * (1/m) * (t(x) %*% (yhat - y)))                                ## Calculating the new beta coefficinets values.
+      beta_iter[i,1:15] <- t(beta_value)                                                                ## storing the beta coefficients value.
+      
+
+      if ((i > 1) && ((cost_iter[[i-1]] - cost_iter[[i]]) < thold)) {
+        print('Threshold reached')
+        break
+        }
+      }
+    
+    final_val <- list(cost_iter, beta_iter, yhat_iter, error_iter)                                      ## Storing the variables in a single variable so that it can be returned.
+    return (final_val)                                                                                  ## Returning the values.
+    
+}
+  
+final <- gradient_descent(x_gpu_train, y_gpu_train, alpha, m, beta, thold)
+
+cost_return_train_best  <- final[[1]]
+beta_return_train_best  <- final[[2]]
+yhat_return_train_best  <- final[[3]]
+error_return_train_best <- final[[4]]
+
+
+conv_iter <- length(cost_return_train_best)
+
+beta_conv_iter <- beta_return_train_best[conv_iter,1:15]
+
+cost_return_train_best[conv_iter]
+
+final_test <- gradient_descent(x_gpu_test, y_gpu_test, alpha, m, beta, thold)
+
+cost_return_test_best <- final_test[[1]]
+
+```
+
+```{r grad-function-plots, warning=False}
+
+plot(1:length(cost_train_0.00001_a), cost_train_0.00001_a, main = 'Cost function convergence at various alpha.', xlab = 'No. of Iterations', ylab = 'Cost Function value', col='red', type='l', xlim=c(0,10000), ylim=c(0.28,0.5),sub='Convergence Threshold value - 0.000001')
+lines(1:length(cost_train_0.0001_a), cost_train_0.0001_a, col='blue3')
+lines(1:length(cost_train_0.001_a), cost_train_0.001_a, col='green3')
+lines(1:length(cost_train_0.01_a), cost_train_0.01_a, col='black')
+legend("topright",c("alpha=0.00001","alpha=0.0001","alpha=0.001","alpha=0.01"),cex=0.7, bty='n', fill=c("red","blue3","green3","black"))
+
+plot(alpha_range, cost_train_all_a, main = 'Min Cost in training and test data at each alpha.', xlab = 'Alpha Values', ylab = 'Minimum Cost Value', col='red', type='l',sub='Convergence Threshold value - 0.000001',xlim=c(0,0.010), ylim=c(0.25,0.5))
+lines(alpha_range, cost_test_all_a, col='blue3')
+legend("topright",c("Red=Training","Blue=Validation"),cex=0.7, bty='n', fill=c("red","blue3"))
+
+
+plot(1:length(cost_train_0.01_t), cost_train_0.01_t, main = 'Cost function convergence at various threshold.', xlab = 'No. of Iterations', ylab = 'Cost Function value', col='red', type='l',  sub='Alpha value - 0.0001', xlim=c(0,10000), ylim=c(0.28,1), lty=4)
+lines(1:length(cost_train_0.001_t), cost_train_0.001_t, col='blue3', pch='19', lty=2)
+lines(1:length(cost_train_0.0001_t), cost_train_0.0001_t, col='green3', pch='20', lty=3)
+legend("topright",c("thold=0.000000001","thold=0.0000001","thod=0.0000001"),cex=0.7, bty='n', fill=c("red","blue3","green3"))
+
+plot(cost_train_all_t, threshold_range, main = 'Min Cost in training and test data at each threshold.', ylab = 'Threshold Values', xlab = 'Minimum Cost Value', col='red', type='l',sub='Alpha Value - 0.0001', xlim=c(0.325,0.37), ylim=c(0,0.00001))
+lines(cost_test_all_t, threshold_range, col='blue3')
+legend("topright",c("Red=Training","Blue=Validation"),cex=0.7, bty='n', fill=c("red","blue3"))
+
+plot(1:length(cost_return_train_best), cost_return_train_best, main = 'Cost function convergence at best threshold - 0.000001.', xlab = 'No. of Iterations', ylab = 'Cost Function value', col='red', type='l', xlim=c(0,10000), ylim=c(0,0.6),sub='Alpha value - 0.0001')
+lines(1:length(cost_return_test_best), cost_return_test_best, col='blue3')
+legend("topright",c("Red=Training","Blue=Validation"),cex=0.7, bty='n', fill=c("red","blue3"))
+
+```
+
+
+```{r converting-target-to-binary, warning=False}
+median.input <- median(gpu_norm_df$Average)
+median.input
+
+x.train.gpu.logit <- x_gpu_train
+y.train.gpu.logit <- y_gpu_train
+
+head(y.train.gpu.logit)
+y.train.gpu.logit  <- ifelse(y.train.gpu.logit <= median.input, 0, 1)
+head(y.train.gpu.logit)
+
+
+x.test.gpu.logit  <- x_gpu_test
+y.test.gpu.logit <- y_gpu_test
+head(y.test.gpu.logit)
+y.test.gpu.logit  <- ifelse(y.test.gpu.logit <= median.input, 0, 1)
+head(y.test.gpu.logit)
+
+```
+
+```{r logistic-gradient-descent, warning=False}
+##
+##
+##
+logit_gradient_descent <- function(x, y, alpha, m, beta)
+{
+    cost_iter_l  <<- list()
+    beta_iter_l  <<- matrix(0,nrow=m,ncol=15)
+    yhat_iter_l  <<- list()
+    error_iter_l <<- list()
+##
+##
+##
+    for (i in 1:10000){
+      
+      yhat <- 1 / (1 + exp(-(as.matrix(x) %*% beta_value))) 
+        
+      yhat_iter_l[i] <- yhat
+      
+      error <- yhat - y
+      error_iter_l[i] <- error
+      
+      cost <- (1/(2*m)) * (t(error) %*% error)
+      cost_iter_l[i] <- cost
+      
+      beta_value <- beta_value - (alpha * (1/m) * (t(x) %*% (yhat - y))) 
+      beta_iter_l[i,1:15] <- t(beta_value)
+      
+     # beta_zero <- beta_zero - (alpha * (1/m) * (yhat - y))
+     # beta_iter[i,1] <-  beta_zero
+#      list.append(beta_iter, beta_value)
+      if ((i > 1) && ((cost_iter_l[[i-1]] - cost_iter_l[[i]]) < 0.0000001)) {
+        print('Threshold reached')
+        break
+        }
+      
+    }
+    
+    final_val_l <- list(cost_iter_l, beta_iter_l, yhat_iter_l, error_iter_l)
+    return (final_val_l)
+    
+}
+```
+
+
+```{r logistic-reg-test-predict, warning=False}
+
+logistic_test_predict <- function(beta_conv_iter_l, x.test.gpu.logit, y.test.gpu.logit) 
+  {
+  yhat_test  <- 1 / (1 + exp(-(as.matrix(x.test.gpu.logit) %*% beta_conv_iter_l)))
+
+  error_test <- yhat_test - y_gpu_test
+
+  cost_test  <- (1/(2*length(y_gpu_test))) * sum(t(error_test) %*% error_test)
+
+  test_val <- list(yhat_test, error_test, cost_test)
+  
+  return(test_val)
+}
+
+```
+
+
+```{r calling-logistic-gradient-descent, warning=False}
+
+main_function_l <- function(alpha, m, beta_value, thold) {
+  
+  
+  cost_return_l  <- list()
+  beta_return_l  <- list()
+  yhat_return_l  <- list()
+
+  cost_return_test_l  <- list()
+  beta_return_test_l  <- list()
+  yhat_return_test_l  <- list()
+
+  final_test_l   <- list()
+  final_l        <- list()
+
+
+  final_l <- logit_gradient_descent(x.train.gpu.logit, y.train.gpu.logit, alpha, m, beta)
+
+
+  cost_return_l  <- final_l[[1]]
+  beta_return_l  <- final_l[[2]]
+  yhat_return_l  <- final_l[[3]]
+  error_return_l <- final_l[[4]]
+
+
+  conv_iter_l    <- length(cost_return_l)
+  conv_iter_l
+  beta_conv_iter_l <- beta_return_l[conv_iter_l,1:15]
+  beta_conv_iter_l
+  cost_return_l[conv_iter_l]
+
+
+  final_test_l <- logistic_test_predict(beta_conv_iter_l, x.test.gpu.logit, y.test.gpu.logit)
+
+
+  cost_return_test_l <- final_test_l[[3]]
+  yhat_return_test_l <- final_test_l[[1]]
+  error_return_test_l <- final_test_l[[2]]
+
+  cost_return_test_l
+
+  head(yhat_return_test_l)
+  max(yhat_return_test_l)
+  min(yhat_return_test_l)
+  colnames(yhat_return_test_l) <-  'Probability'
+  
+  cost_result <- list(cost_return_l, cost_return_test_l, conv_iter_l)
+  
+return(cost_result)
+  
+}
+```
+
+
+```{r experimentation-logit-alpha, warning=False}
+alpha_range <- matrix(c(0.01, 0.001, 0.0001, 0.00001))
+
+thold = 0.000001
+
+alpha <- 0.00001
+m <- nrow(gpu.train.df)
+beta_value <<- rep(0,15)
+cost_return <- main_function_l(alpha, m, beta_value, thold)
+cost_return_train <- cost_return[[1]]
+cost_return_test  <- cost_return[[2]]
+conv_iter <- cost_return[[3]]
+cost_train_0.00001_al <- cost_return_train
+cost_train_min_0.00001_al <- cost_return_train[conv_iter]
+cost_test_0.00001_al <- cost_return_test
+
+alpha <- 0.0001
+m <- nrow(gpu.train.df)
+beta_value <<- rep(0,15)
+cost_return <- main_function_l(alpha, m, beta_value, thold)
+cost_return_train <- cost_return[[1]]
+cost_return_test  <- cost_return[[2]]
+conv_iter <- cost_return[[3]]
+cost_train_0.0001_al <- cost_return_train
+cost_train_min_0.0001_al <- cost_return_train[conv_iter]
+cost_test_0.0001_al <- cost_return_test
+
+alpha <- 0.001
+m <- nrow(gpu.train.df)
+beta_value <<- rep(0,15)
+cost_return <- main_function_l(alpha, m, beta_value, thold)
+cost_return_train <- cost_return[[1]]
+cost_return_test  <- cost_return[[2]]
+conv_iter <- cost_return[[3]]
+cost_train_0.001_al <- cost_return_train
+cost_train_min_0.001_al <- cost_return_train[conv_iter]
+cost_test_0.001_al <- cost_return_test
+
+alpha <- 0.01
+m <- nrow(gpu.train.df)
+beta_value <<- rep(0,15)
+cost_return <- main_function_l(alpha, m, beta_value, thold)
+cost_return_train <- cost_return[[1]]
+cost_return_test  <- cost_return[[2]]
+conv_iter <- cost_return[[3]]
+cost_train_0.01_al <- cost_return_train
+cost_train_min_0.01_al <- cost_return_train[conv_iter]
+cost_test_0.01_al <- cost_return_test
+
+cost_train_all_al <- matrix(c(cost_train_min_0.01_al,cost_train_min_0.001_al,cost_train_min_0.0001_al,cost_train_min_0.00001_al))
+cost_test_all_al <- matrix(c(cost_test_0.01_al,cost_test_0.001_al,cost_test_0.0001_al,cost_test_0.00001_al))
+
+```
+
+```{r experimentation-linear-threshold, warning=False}
+threshold_range <- matrix(c(0.00001, 0.000001, 0.0000001))
+
+alpha <- 0.0001
+
+
+thold = 0.000000001
+m <- nrow(gpu.train.df)
+beta_value <<- rep(0,15)
+cost_return <- main_function_l(alpha, m, beta_value, thold)
+cost_return_train <- cost_return[[1]]
+cost_return_test  <- cost_return[[2]]
+conv_iter <- cost_return[[3]]
+cost_train_0.0001_tl <- cost_return_train
+cost_train_min_0.0001_tl <- cost_return_train[conv_iter]
+cost_test_0.0001_tl <- cost_return_test
+
+thold = 0.00000001
+m <- nrow(gpu.train.df)
+beta_value <<- rep(0,15)
+cost_return <- main_function_l(alpha, m, beta_value, thold)
+cost_return_train <- cost_return[[1]]
+cost_return_test  <- cost_return[[2]]
+conv_iter <- cost_return[[3]]
+cost_train_0.001_tl <- cost_return_train
+cost_train_min_0.001_tl <- cost_return_train[conv_iter]
+cost_test_0.001_tl <- cost_return_test
+
+thold = 0.0000001
+m <- nrow(gpu.train.df)
+beta_value <<- rep(0,15)
+cost_return <- main_function_l(alpha, m, beta_value, thold)
+cost_return_train <- cost_return[[1]]
+cost_return_test  <- cost_return[[2]]
+conv_iter <- cost_return[[3]]
+cost_train_0.01_tl <- cost_return_train
+cost_train_min_0.01_tl <- cost_return_train[conv_iter]
+cost_test_0.01_tl <- cost_return_test
+
+cost_train_all_tl <- matrix(c(cost_train_min_0.01_tl,cost_train_min_0.001_tl,cost_train_min_0.0001_tl))
+cost_test_all_tl <- matrix(c(cost_test_0.01_tl,cost_test_0.001_tl,cost_test_0.0001_tl))
+
+#cost_train_all_t <- matrix(c(cost_train_0.01_t,cost_train_0.001_t,cost_train_0.0001_t,cost_train_0.00001_t))
+#cost_test_all_t <- matrix(c(cost_test_0.01_t,cost_test_0.001_t,cost_test_0.0001_t,cost_test_0.00001_t))
+```
+
+```{r exp2-2ndquesl, warrning=False}
+
+thold = 0.000001
+
+logit_gradient_descent_best <- function(x, y, alpha, m, beta, thod)
+{
+    cost_iter_l  <<- list()
+    beta_iter_l  <<- matrix(0,nrow=m,ncol=15)
+    yhat_iter_l  <<- list()
+    error_iter_l <<- list()
+##
+##
+##
+    for (i in 1:3000){
+      
+      yhat <- 1 / (1 + exp(-(as.matrix(x) %*% beta_value))) 
+        
+      yhat_iter_l[i] <- yhat
+      
+      error <- yhat - y
+      error_iter_l[i] <- error
+      
+      cost <- (1/(2*m)) * (t(error) %*% error)
+      cost_iter_l[i] <- cost
+      
+      beta_value <- beta_value - (alpha * (1/m) * (t(x) %*% (yhat - y))) 
+      beta_iter_l[i,1:15] <- t(beta_value)
+      
+     # beta_zero <- beta_zero - (alpha * (1/m) * (yhat - y))
+     # beta_iter[i,1] <-  beta_zero
+#      list.append(beta_iter, beta_value)
+      if ((i > 1) && ((cost_iter_l[[i-1]] - cost_iter_l[[i]]) < thold)) {
+        print('Threshold reached')
+        break
+        }
+      
+    }
+    
+    final_val_l <- list(cost_iter_l, beta_iter_l, yhat_iter_l, error_iter_l)
+    return (final_val_l)
+    
+}
+
+cost_return_trainl  <- list()
+beta_return_trainl  <- list()
+yhat_return_trainl  <- list()
+final_return_trainl <- list()
+
+cost_return_testl   <- list()
+yhat_return_testl   <- list()
+error_return_testl  <- list()
+
+final              <- list()
+final_test         <- list()
+
+  
+final <- logit_gradient_descent_best(x_gpu_train, y_gpu_train, alpha, m, beta, thold)
+
+cost_return_trainl  <- final[[1]]
+beta_return_trainl  <- final[[2]]
+yhat_return_trainl  <- final[[3]]
+error_return_trainl <- final[[4]]
+
+
+conv_iterl <- length(cost_return_train)
+conv_iterl
+beta_conv_iter <- beta_return_trainl[conv_iterl,1:15]
+
+cost_return_trainl[conv_iterl]
+
+final_test <- logit_gradient_descent_best(x_gpu_test, y_gpu_test, alpha, m, beta, thold)
+
+cost_return_testlp <- list()
+cost_return_testlp <- final_test[[1]]
+
+
+```
+
+```{r grad-function-plots, warning=False}
+
+plot(1:length(cost_train_0.00001_al), cost_train_0.00001_al, main = 'Cost function convergence at various alpha.', xlab = 'No. of Iterations', ylab = 'Cost Function value', col='red', type='l', xlim=c(0,3000), ylim=c(0.07,0.15),sub='Convergence Threshold value - 0.000001')
+lines(1:length(cost_train_0.0001_al), cost_train_0.0001_al, col='blue3')
+lines(1:length(cost_train_0.001_al), cost_train_0.001_al, col='green3')
+lines(1:length(cost_train_0.01_al), cost_train_0.01_al, col='black')
+legend("topright",c("alpha=0.00001","alpha=0.0001","alpha=0.001","alpha=0.01"),cex=0.7, bty='n', fill=c("red","blue3","green3","black"))
+
+plot(alpha_range, cost_train_all_al, main = 'Min Cost in training and test data at each alpha.', xlab = 'Alpha Values', ylab = 'Minimum Cost Value', col='red', type='l',sub='Convergence Threshold value - 0.000001',xlim=c(0,0.010), ylim=c(0,1))
+lines(alpha_range, cost_test_all_al, col='blue3')
+legend("topright",c("Red=Training","Blue=Validation"),cex=0.7, bty='n', fill=c("red","blue3"))
+
+
+plot(1:length(cost_train_0.0001_tl), cost_train_0.0001_tl, main = 'Cost function convergence at various threshold.', xlab = 'No. of Iterations', ylab = 'Cost Function value', col='red', type='l', xlim=c(0,3000), sub='Alpha value - 0.0001')
+lines(1:length(cost_train_0.001_tl), cost_train_0.001_tl, col='blue3')
+lines(1:length(cost_train_0.01_tl), cost_train_0.01_tl, col='green3')
+legend("topright",c("thold=0.0000001","thold=0.00000001","thold=0.000000001"),cex=0.7, bty='n', fill=c("red","blue3","green3"))
+
+plot(threshold_range, cost_train_all_tl, main = 'Min Cost in training and test data at each threshold.', xlab = 'Threshold Values', ylab = 'Minimum Cost Value', col='red', type='l',sub='Alpha Value - 0.0001', ylim=c(0,0.7))
+lines(threshold_range, cost_test_all_tl, col='blue3')
+legend("topright",c("Red=Training","Blue=Validation"),cex=0.7, bty='n', fill=c("red","blue3"))
+
+plot(1:length(cost_return_trainl), cost_return_trainl, main = 'Cost function convergence at best threshold - 0.000001.', xlab = 'No. of Iterations', ylab = 'Cost Function value', col='red', type='l', xlim=c(0,3000), ylim=c(0.2,0.8),sub='Alpha value - 0.0001')
+lines(1:length(cost_return_testlp), cost_return_testlp, col='blue3')
+legend("topright",c("Red=Training","Blue=Validation"),cex=0.7, bty='n', fill=c("red","blue3"))
+
+```
+
+```{r random-model, warning=False}
+##
+## Let us randomly select the variables/ features 1,2,4,6,7,8,10,12 for our experimentation.
+##
+x_gpu_train <- as.matrix(gpu_train_norm[c(3,4,6,7,8,10,12,13)])
+y_gpu_train <- as.matrix(gpu_train_norm[c('Average')])
+
+x_gpu_test  <- as.matrix(gpu_test_norm[c(3,4,6,7,8,10,12,13)])
+y_gpu_test  <- as.matrix(gpu_test_norm[c('Average')])
+
+x_gpu_train <- cbind(Intercept=1,x_gpu_train) 
+head(x_gpu_train)
+head(y_gpu_train)
+x_gpu_test  <- cbind(Intercept=1, x_gpu_test)
+as.data.frame(colnames(x_gpu_test))
+
+as.data.frame(colnames(x_gpu_test))
+
+thold = 0.000001
+alpha = 0.0001
+
+cost_iter                <- list()
+beta_value               <- rep(0,9)
+yhat_iter                <- list()
+error_iter               <- list()
+beta_iter                <- list()
+cost_return_lin_tst      <- list()
+m                        <- nrow(gpu.train.df)
+
+##
+## We are iterating over the matrices with te goal of minimizing the cost function value.
+##
+for (i in 1:3000){
+  
+  yhat               <- as.matrix(x_gpu_train) %*% beta_value                                                     ## Predictions of target variable.
+  yhat_iter[i]       <- yhat                                                                              ## Storing the predicted value.               
+  
+  error              <- yhat - y_gpu_train                                                                       ## Calculating the error value.
+  error_iter[i]      <- error                                                                            ## Storing the error value.
+  
+  cost               <- (1/(2*m)) * (t(error) %*% error)                                                          ## Calculating the cost function value.
+  cost_iter[i]       <- cost                                                                              ## storing the cost function value.
+  
+  beta_value         <- beta_value - (alpha * (1/m) * (t(x_gpu_train) %*% (yhat - y_gpu_train)))            ## Calculating the new beta coefficinets values.
+  beta_iter[i]   <- t(beta_value)                                                                 ## storing the beta coefficients value.
+  
+  
+}
+
+final_val                <- list(cost_iter, beta_iter, yhat_iter, error_iter)                           ## Storing the variables in a single variable so that it can be returned.
+cost_return_lin_tst      <- final_val[[1]]
+
+
+
+cost_iter                <- list()
+beta_value               <- rep(0,9)
+yhat_iter                <- list()
+error_iter               <- list()
+beta_iter                <- list()
+cost_return_lin_tsv      <- list()
+m                        <- nrow(gpu.test.df)
+
+for (i in 1:3000){
+  
+  yhat               <- as.matrix(x_gpu_test) %*% beta_value                                         ## Predictions of target variable.
+  yhat_iter[i]       <- yhat                                                                         ## Storing the predicted value.               
+  
+  error              <- yhat - y_gpu_test                                                            ## Calculating the error value.
+  error_iter[i]      <- error                                                                        ## Storing the error value.
+  
+  cost               <- (1/(2*m)) * (t(error) %*% error)                                             ## Calculating the cost function value.
+  cost_iter[i]       <- cost                                                                         ## storing the cost function value.
+  
+  beta_value         <- beta_value - (alpha * (1/m) * (t(x_gpu_test) %*% (yhat - y_gpu_test)))       ## Calculating the new beta coefficinets values.
+  beta_iter[i]   <- t(beta_value)                                                                ## storing the beta coefficients value.
+  
+}
+
+final_val                <- list(cost_iter, beta_iter, yhat_iter, error_iter)                            ## Storing the variables in a single variable so that it can be returned.
+cost_return_lin_tsv      <- final_val[[1]]
+
+
+median.input             <- median(gpu_norm_df$Average)
+x_train_gpu_logit        <- x_gpu_train
+y_train_gpu_logit        <- y_gpu_train
+y_train_gpu_logit        <- ifelse(y.train.gpu.logit <= median.input, 0, 1)
+
+x_test_gpu_logit         <- x_gpu_test
+y_test_gpu_logit         <- y_gpu_test
+y_test_gpu_logit         <- ifelse(y.test.gpu.logit <= median.input, 0, 1)
+
+
+cost_iter_l                <- list()
+beta_value               <- rep(0,9)
+yhat_iter_l                <- list()
+error_iter_l               <- list()
+beta_iter_l                <- list()
+cost_return_train_l_st   <- list()
+m                        <- nrow(gpu.train.df)
+
+for (i in 1:3000){
+  
+  yhat               <- 1 / (1 + exp(-(as.matrix(x_train_gpu_logit) %*% beta_value))) 
+  yhat_iter_l[i]     <- yhat
+  
+  error              <- yhat - y_train_gpu_logit
+  error_iter_l[i]    <- error
+  
+  cost               <- (1/(2*m)) * (t(error) %*% error)
+  cost_iter_l[i]     <- cost
+  
+  beta_value         <- beta_value - (alpha * (1/m) * (t(x_train_gpu_logit) %*% (yhat - y_train_gpu_logit))) 
+  beta_iter_l[i]     <- t(beta_value)
+  
+}
+
+final_val_l              <- list(cost_iter_l, beta_iter_l, yhat_iter_l, error_iter_l)
+cost_return_train_l_st   <- final_val_l[[1]]
+
+
+cost_iter_l                <- list()
+beta_value                 <- rep(0,9)
+yhat_iter_l                <- list()
+error_iter_l               <- list()
+beta_iter_l                <- list()
+cost_return_testlsv        <- list()
+m                          <- nrow(gpu.test.df)
+
+for (i in 1:3000){
+  
+  yhat               <- 1 / (1 + exp(-(as.matrix(x_test_gpu_logit) %*% beta_value))) 
+  yhat_iter_l[i]     <- yhat
+  
+  error              <- yhat - y_test_gpu_logit
+  error_iter_l[i]    <- error
+  
+  cost               <- (1/(2*m)) * (t(error) %*% error)
+  cost_iter_l[i]     <- cost
+  
+  beta_value         <- beta_value - (alpha * (1/m) * (t(x_test_gpu_logit) %*% (yhat - y_test_gpu_logit))) 
+  beta_iter_l[i] <- t(beta_value)
+  
+}
+
+final_val_l              <- list(cost_iter_l, beta_iter_l, yhat_iter_l, error_iter_l)
+cost_return_testlsv      <- final_val_l[[1]]
+##
+##
+##
+x_gpu_train              <- as.matrix(gpu_train_norm[c(1:14)])
+y_gpu_train              <- as.matrix(gpu_train_norm[c('Average')])
+
+x_gpu_test               <- as.matrix(gpu_test_norm[c(1:14)])
+y_gpu_test               <- as.matrix(gpu_test_norm[c('Average')])
+
+x_gpu_train              <- cbind(Intercept=1,x_gpu_train) 
+x_gpu_test               <- cbind(Intercept=1,x_gpu_test)
+
+as.data.frame(colnames(x_gpu_test))
+
+thold = 0.000001
+alpha = 0.0001
+
+cost_iter                <- list()
+beta_value               <- rep(0,15)
+yhat_iter                <- list()
+error_iter               <- list()
+beta_iter                <- list()
+cost_return_all_train      <- list()
+cost_return_all_test      <- list()
+m                        <- nrow(gpu.train.df)
+
+##
+## We are iterating over the matrices with te goal of minimizing the cost function value.
+##
+for (i in 1:3000){
+  
+  yhat               <- as.matrix(x_gpu_train) %*% beta_value                                                     ## Predictions of target variable.
+  yhat_iter[i]       <- yhat                                                                              ## Storing the predicted value.               
+  
+  error              <- yhat - y_gpu_train                                                                       ## Calculating the error value.
+  error_iter[i]      <- error                                                                            ## Storing the error value.
+  
+  cost               <- (1/(2*m)) * (t(error) %*% error)                                                          ## Calculating the cost function value.
+  cost_iter[i]       <- cost                                                                              ## storing the cost function value.
+  
+  beta_value         <- beta_value - (alpha * (1/m) * (t(x_gpu_train) %*% (yhat - y_gpu_train)))            ## Calculating the new beta coefficinets values.
+  beta_iter[i]   <- t(beta_value)                                                                 ## storing the beta coefficients value.
+  
+  
+}
+
+final_val                <- list(cost_iter, beta_iter, yhat_iter, error_iter)                           ## Storing the variables in a single variable so that it can be returned.
+cost_return_all_train      <- final_val[[1]]
+
+
+cost_iter                <- list()
+beta_value               <- rep(0,15)
+yhat_iter                <- list()
+error_iter               <- list()
+beta_iter                <- list()
+cost_return_all_test      <- list()
+
+m                        <- nrow(gpu.test.df)
+for (i in 1:3000){
+  
+  yhat               <- as.matrix(x_gpu_test) %*% beta_value                                                     ## Predictions of target variable.
+  yhat_iter[i]       <- yhat                                                                              ## Storing the predicted value.               
+  
+  error              <- yhat - y_gpu_test                                                                       ## Calculating the error value.
+  error_iter[i]      <- error                                                                            ## Storing the error value.
+  
+  cost               <- (1/(2*m)) * (t(error) %*% error)                                                          ## Calculating the cost function value.
+  cost_iter[i]       <- cost                                                                              ## storing the cost function value.
+  
+  beta_value         <- beta_value - (alpha * (1/m) * (t(x_gpu_test) %*% (yhat - y_gpu_test)))            ## Calculating the new beta coefficinets values.
+  beta_iter[i]   <- t(beta_value)                                                                 ## storing the beta coefficients value.
+  
+  
+}
+final_val                <- list(cost_iter, beta_iter, yhat_iter, error_iter)
+cost_return_all_test      <- final_val[[1]]
+
+
+median.input             <- median(gpu_norm_df$Average)
+x_train_gpu_logit        <- x_gpu_train
+y_train_gpu_logit        <- y_gpu_train
+y_train_gpu_logit        <- ifelse(y.train.gpu.logit <= median.input, 0, 1)
+
+x_test_gpu_logit         <- x_gpu_test
+y_test_gpu_logit         <- y_gpu_test
+y_test_gpu_logit         <- ifelse(y.test.gpu.logit <= median.input, 0, 1)
+
+
+cost_iter_l                <- list()
+beta_value               <- rep(0,15)
+yhat_iter_l                <- list()
+error_iter_l               <- list()
+beta_iter_l                <- list()
+cost_return_testl_all   <- list()
+m                        <- nrow(gpu.train.df)
+
+for (i in 1:3000){
+  
+  yhat               <- 1 / (1 + exp(-(as.matrix(x_test_gpu_logit) %*% beta_value))) 
+  yhat_iter_l[i]     <- yhat
+  
+  error              <- yhat - y_test_gpu_logit
+  error_iter_l[i]    <- error
+  
+  cost               <- (1/(2*m)) * (t(error) %*% error)
+  cost_iter_l[i]     <- cost
+  
+  beta_value         <- beta_value - (alpha * (1/m) * (t(x_test_gpu_logit) %*% (yhat - y_test_gpu_logit))) 
+  beta_iter_l[i] <- t(beta_value)
+  
+}
+
+final_val_l              <- list(cost_iter_l, beta_iter_l, yhat_iter_l, error_iter_l)
+cost_return_testl_all      <- final_val_l[[1]]
+
+
+
+cost_iter_l                <- list()
+beta_value               <- rep(0,15)
+yhat_iter_l                <- list()
+error_iter_l               <- list()
+beta_iter_l                <- list()
+cost_return_trainl_all   <- list()
+m                        <- nrow(gpu.train.df)
+
+for (i in 1:3000){
+  
+  yhat               <- 1 / (1 + exp(-(as.matrix(x_train_gpu_logit) %*% beta_value))) 
+  yhat_iter_l[i]     <- yhat
+  
+  error              <- yhat - y_train_gpu_logit
+  error_iter_l[i]    <- error
+  
+  cost               <- (1/(2*m)) * (t(error) %*% error)
+  cost_iter_l[i]     <- cost
+  
+  beta_value         <- beta_value - (alpha * (1/m) * (t(x_train_gpu_logit) %*% (yhat - y_train_gpu_logit))) 
+  beta_iter_l[i] <- t(beta_value)
+  
+}
+
+final_val_l              <- list(cost_iter_l, beta_iter_l, yhat_iter_l, error_iter_l)
+cost_return_trainl_all      <- final_val_l[[1]]
+
+
+
+plot(1:length(cost_return_lin_tst), cost_return_lin_tst, main = 'Cost function convergence for different models.', xlab = 'No. of Iterations', ylab = 'Cost Function value', col='black', type='l', xlim=c(0,3000), ylim=c(0.4,0.5),sub='Convergence Threshold value - 0.000001')
+lines(1:length(cost_return_lin_tsv), cost_return_lin_tsv, col='blue3')
+lines(1:length(cost_return_all_train),cost_return_all_train, col='green3')
+lines(1:length(cost_return_all_test), cost_return_all_test, col='red')
+legend("topright",c("Training - 8 Features","Testing - 8 Features","Training - all Features","Testing - all Features"),cex=0.7, bty='n', fill=c("black","blue3","green3","red"))
+
+plot(1:length(cost_return_train_l_st), cost_return_train_l_st, main = 'Cost function convergence for different models.', xlab = 'No. of Iterations', ylab = 'Cost Function value', col='red', type='l', lwd=5, xlim=c(0,3000), ylim=c(0.03,0.2),sub='Convergence Threshold value - 0.000001')
+lines(1:length(cost_return_testlsv), cost_return_testlsv, col='blue3',lty=5, lwd=3)
+lines(1:length(cost_return_trainl_all),cost_return_trainl_all, col='green3', lty=2, lwd=3)
+lines(1:length(cost_return_testl_all), cost_return_testl_all, col='black', lty=1, lwd=2)
+legend("topright",c("Train 8","Test 8","Train all","Test all"),cex=0.7, bty='n', fill=c("red","blue3","green3","black"))
+
+```
+
+```{r significant-model, warning=False}
+##
+## Let us select the variables/ features VWM,VWN, SB, SA, MWG, NWG, MDIMC and NDIMC for our experimentation.
+##
+x_gpu_train              <- as.matrix(gpu_train_norm[c('VWM','VWN','MWG','NWG','MDIMC','NDIMC','SA','SB')])
+y_gpu_train              <- as.matrix(gpu_train_norm[c('Average')])
+
+x_gpu_test               <- as.matrix(gpu_test_norm[c('VWM','VWN','MWG','NWG','MDIMC','NDIMC','SA','SB')])
+y_gpu_test               <- as.matrix(gpu_test_norm[c('Average')])
+
+x_gpu_train              <- cbind(Intercept=1,x_gpu_train) 
+x_gpu_test               <- cbind(Intercept=1,x_gpu_test)
+
+as.data.frame(colnames(x_gpu_test))
+
+thold = 0.000001
+alpha = 0.0001
+
+cost_iter                <- list()
+beta_value               <- rep(0,9)
+yhat_iter                <- list()
+error_iter               <- list()
+beta_iter                <- list()
+cost_return_lin_tst      <- list()
+m                        <- nrow(gpu.train.df)
+
+##
+## We are iterating over the matrices with te goal of minimizing the cost function value.
+##
+for (i in 1:3000){
+  
+  yhat               <- as.matrix(x_gpu_train) %*% beta_value                                                     ## Predictions of target variable.
+  yhat_iter[i]       <- yhat                                                                              ## Storing the predicted value.               
+  
+  error              <- yhat - y_gpu_train                                                                       ## Calculating the error value.
+  error_iter[i]      <- error                                                                            ## Storing the error value.
+  
+  cost               <- (1/(2*m)) * (t(error) %*% error)                                                          ## Calculating the cost function value.
+  cost_iter[i]       <- cost                                                                              ## storing the cost function value.
+  
+  beta_value         <- beta_value - (alpha * (1/m) * (t(x_gpu_train) %*% (yhat - y_gpu_train)))            ## Calculating the new beta coefficinets values.
+  beta_iter[i]   <- t(beta_value)                                                                 ## storing the beta coefficients value.
+  
+  
+}
+
+final_val                <- list(cost_iter, beta_iter, yhat_iter, error_iter)                           ## Storing the variables in a single variable so that it can be returned.
+cost_return_lin_tst      <- final_val[[1]]
+
+
+
+cost_iter                <- list()
+beta_value               <- rep(0,9)
+yhat_iter                <- list()
+error_iter               <- list()
+beta_iter                <- list()
+cost_return_lin_tsv      <- list()
+m                        <- nrow(gpu.test.df)
+
+for (i in 1:3000){
+  
+  yhat               <- as.matrix(x_gpu_test) %*% beta_value                                         ## Predictions of target variable.
+  yhat_iter[i]       <- yhat                                                                         ## Storing the predicted value.               
+  
+  error              <- yhat - y_gpu_test                                                            ## Calculating the error value.
+  error_iter[i]      <- error                                                                        ## Storing the error value.
+  
+  cost               <- (1/(2*m)) * (t(error) %*% error)                                             ## Calculating the cost function value.
+  cost_iter[i]       <- cost                                                                         ## storing the cost function value.
+  
+  beta_value         <- beta_value - (alpha * (1/m) * (t(x_gpu_test) %*% (yhat - y_gpu_test)))       ## Calculating the new beta coefficinets values.
+  beta_iter[i]   <- t(beta_value)                                                                ## storing the beta coefficients value.
+  
+}
+
+final_val                <- list(cost_iter, beta_iter, yhat_iter, error_iter)                            ## Storing the variables in a single variable so that it can be returned.
+cost_return_lin_tsv      <- final_val[[1]]
+
+
+median.input             <- median(gpu_norm_df$Average)
+x_train_gpu_logit        <- x_gpu_train
+y_train_gpu_logit        <- y_gpu_train
+y_train_gpu_logit        <- ifelse(y.train.gpu.logit <= median.input, 0, 1)
+
+x_test_gpu_logit         <- x_gpu_test
+y_test_gpu_logit         <- y_gpu_test
+y_test_gpu_logit         <- ifelse(y.test.gpu.logit <= median.input, 0, 1)
+
+
+cost_iter_l                <- list()
+beta_value               <- rep(0,9)
+yhat_iter_l                <- list()
+error_iter_l               <- list()
+beta_iter_l                <- list()
+cost_return_train_l_st   <- list()
+m                        <- nrow(gpu.train.df)
+
+for (i in 1:3000){
+  
+  yhat               <- 1 / (1 + exp(-(as.matrix(x_train_gpu_logit) %*% beta_value))) 
+  yhat_iter_l[i]     <- yhat
+  
+  error              <- yhat - y_train_gpu_logit
+  error_iter_l[i]    <- error
+  
+  cost               <- (1/(2*m)) * (t(error) %*% error)
+  cost_iter_l[i]     <- cost
+  
+  beta_value         <- beta_value - (alpha * (1/m) * (t(x_train_gpu_logit) %*% (yhat - y_train_gpu_logit))) 
+  beta_iter_l[i]     <- t(beta_value)
+  
+}
+
+final_val_l              <- list(cost_iter_l, beta_iter_l, yhat_iter_l, error_iter_l)
+cost_return_train_l_st   <- final_val_l[[1]]
+
+
+cost_iter_l                <- list()
+beta_value                 <- rep(0,9)
+yhat_iter_l                <- list()
+error_iter_l               <- list()
+beta_iter_l                <- list()
+cost_return_testlsv        <- list()
+m                          <- nrow(gpu.test.df)
+
+for (i in 1:3000){
+  
+  yhat               <- 1 / (1 + exp(-(as.matrix(x_test_gpu_logit) %*% beta_value))) 
+  yhat_iter_l[i]     <- yhat
+  
+  error              <- yhat - y_test_gpu_logit
+  error_iter_l[i]    <- error
+  
+  cost               <- (1/(2*m)) * (t(error) %*% error)
+  cost_iter_l[i]     <- cost
+  
+  beta_value         <- beta_value - (alpha * (1/m) * (t(x_test_gpu_logit) %*% (yhat - y_test_gpu_logit))) 
+  beta_iter_l[i] <- t(beta_value)
+  
+}
+
+final_val_l              <- list(cost_iter_l, beta_iter_l, yhat_iter_l, error_iter_l)
+cost_return_testlsv      <- final_val_l[[1]]
+##
+##
+##
+x_gpu_train              <- as.matrix(gpu_train_norm[c(1:14)])
+y_gpu_train              <- as.matrix(gpu_train_norm[c('Average')])
+
+x_gpu_test               <- as.matrix(gpu_test_norm[c(1:14)])
+y_gpu_test               <- as.matrix(gpu_test_norm[c('Average')])
+
+x_gpu_train              <- cbind(Intercept=1,x_gpu_train) 
+x_gpu_test               <- cbind(Intercept=1,x_gpu_test)
+
+as.data.frame(colnames(x_gpu_test))
+
+thold = 0.000001
+alpha = 0.0001
+
+cost_iter                <- list()
+beta_value               <- rep(0,15)
+yhat_iter                <- list()
+error_iter               <- list()
+beta_iter                <- list()
+cost_return_all_train      <- list()
+cost_return_all_test      <- list()
+m                        <- nrow(gpu.train.df)
+
+##
+## We are iterating over the matrices with te goal of minimizing the cost function value.
+##
+for (i in 1:3000){
+  
+  yhat               <- as.matrix(x_gpu_train) %*% beta_value                                                     ## Predictions of target variable.
+  yhat_iter[i]       <- yhat                                                                              ## Storing the predicted value.               
+  
+  error              <- yhat - y_gpu_train                                                                       ## Calculating the error value.
+  error_iter[i]      <- error                                                                            ## Storing the error value.
+  
+  cost               <- (1/(2*m)) * (t(error) %*% error)                                                          ## Calculating the cost function value.
+  cost_iter[i]       <- cost                                                                              ## storing the cost function value.
+  
+  beta_value         <- beta_value - (alpha * (1/m) * (t(x_gpu_train) %*% (yhat - y_gpu_train)))            ## Calculating the new beta coefficinets values.
+  beta_iter[i]   <- t(beta_value)                                                                 ## storing the beta coefficients value.
+  
+  
+}
+
+final_val                <- list(cost_iter, beta_iter, yhat_iter, error_iter)                           ## Storing the variables in a single variable so that it can be returned.
+cost_return_all_train      <- final_val[[1]]
+
+
+cost_iter                <- list()
+beta_value               <- rep(0,15)
+yhat_iter                <- list()
+error_iter               <- list()
+beta_iter                <- list()
+cost_return_all_test      <- list()
+
+m                        <- nrow(gpu.test.df)
+for (i in 1:3000){
+  
+  yhat               <- as.matrix(x_gpu_test) %*% beta_value                                                     ## Predictions of target variable.
+  yhat_iter[i]       <- yhat                                                                              ## Storing the predicted value.               
+  
+  error              <- yhat - y_gpu_test                                                                       ## Calculating the error value.
+  error_iter[i]      <- error                                                                            ## Storing the error value.
+  
+  cost               <- (1/(2*m)) * (t(error) %*% error)                                                          ## Calculating the cost function value.
+  cost_iter[i]       <- cost                                                                              ## storing the cost function value.
+  
+  beta_value         <- beta_value - (alpha * (1/m) * (t(x_gpu_test) %*% (yhat - y_gpu_test)))            ## Calculating the new beta coefficinets values.
+  beta_iter[i]   <- t(beta_value)                                                                 ## storing the beta coefficients value.
+  
+  
+}
+final_val                <- list(cost_iter, beta_iter, yhat_iter, error_iter)
+cost_return_all_test      <- final_val[[1]]
+
+
+median.input             <- median(gpu_norm_df$Average)
+x_train_gpu_logit        <- x_gpu_train
+y_train_gpu_logit        <- y_gpu_train
+y_train_gpu_logit        <- ifelse(y.train.gpu.logit <= median.input, 0, 1)
+
+x_test_gpu_logit         <- x_gpu_test
+y_test_gpu_logit         <- y_gpu_test
+y_test_gpu_logit         <- ifelse(y.test.gpu.logit <= median.input, 0, 1)
+
+
+cost_iter_l                <- list()
+beta_value               <- rep(0,15)
+yhat_iter_l                <- list()
+error_iter_l               <- list()
+beta_iter_l                <- list()
+cost_return_testl_all   <- list()
+m                        <- nrow(gpu.train.df)
+
+for (i in 1:3000){
+  
+  yhat               <- 1 / (1 + exp(-(as.matrix(x_test_gpu_logit) %*% beta_value))) 
+  yhat_iter_l[i]     <- yhat
+  
+  error              <- yhat - y_test_gpu_logit
+  error_iter_l[i]    <- error
+  
+  cost               <- (1/(2*m)) * (t(error) %*% error)
+  cost_iter_l[i]     <- cost
+  
+  beta_value         <- beta_value - (alpha * (1/m) * (t(x_test_gpu_logit) %*% (yhat - y_test_gpu_logit))) 
+  beta_iter_l[i] <- t(beta_value)
+  
+}
+
+final_val_l              <- list(cost_iter_l, beta_iter_l, yhat_iter_l, error_iter_l)
+cost_return_testl_all      <- final_val_l[[1]]
+
+
+
+cost_iter_l                <- list()
+beta_value               <- rep(0,15)
+yhat_iter_l                <- list()
+error_iter_l               <- list()
+beta_iter_l                <- list()
+cost_return_trainl_all   <- list()
+m                        <- nrow(gpu.train.df)
+
+for (i in 1:3000){
+  
+  yhat               <- 1 / (1 + exp(-(as.matrix(x_train_gpu_logit) %*% beta_value))) 
+  yhat_iter_l[i]     <- yhat
+  
+  error              <- yhat - y_train_gpu_logit
+  error_iter_l[i]    <- error
+  
+  cost               <- (1/(2*m)) * (t(error) %*% error)
+  cost_iter_l[i]     <- cost
+  
+  beta_value         <- beta_value - (alpha * (1/m) * (t(x_train_gpu_logit) %*% (yhat - y_train_gpu_logit))) 
+  beta_iter_l[i] <- t(beta_value)
+  
+}
+
+final_val_l              <- list(cost_iter_l, beta_iter_l, yhat_iter_l, error_iter_l)
+cost_return_trainl_all      <- final_val_l[[1]]
+
+```
+
+```{r selected-model-plot}
+plot(1:length(cost_return_lin_tst), cost_return_lin_tst, main = 'Cost function convergence for different models.', xlab = 'No. of Iterations', ylab = 'Cost Function value', col='black', type='l', xlim=c(0,3000), ylim=c(0.4,0.5),sub='Convergence Threshold value - 0.000001')
+lines(1:length(cost_return_lin_tsv), cost_return_lin_tsv, col='blue3')
+lines(1:length(cost_return_all_train),cost_return_all_train, col='green3')
+lines(1:length(cost_return_all_test), cost_return_all_test, col='red')
+legend("topright",c("Training - 8 Features","Testing - 8 Features","Training - all Features","Testing - all Features"),cex=0.7, bty='n', fill=c("black","blue3","green3","red"))
+
+plot(1:length(cost_return_train_l_st), cost_return_train_l_st, main = 'Cost function convergence for different models.', xlab = 'No. of Iterations', ylab = 'Cost Function value', col='red', type='l', lwd=5, xlim=c(0,3000), ylim=c(0.03,0.2),sub='Convergence Threshold value - 0.000001')
+lines(1:length(cost_return_testlsv), cost_return_testlsv, col='blue3',lty=5, lwd=3)
+lines(1:length(cost_return_trainl_all),cost_return_trainl_all, col='green3', lty=2, lwd=3)
+lines(1:length(cost_return_testl_all), cost_return_testl_all, col='black', lty=1, lwd=2)
+legend("topleft",c("Train 8","Test 8","Train all","Test all"),cex=0.7, bty='n', fill=c("red","blue3","green3","black"))
+```
+
