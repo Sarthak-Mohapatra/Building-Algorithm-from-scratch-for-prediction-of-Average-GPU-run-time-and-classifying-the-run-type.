@@ -1,13 +1,12 @@
 # Building Algorithms from scratch for prediction of Average GPU run time and classifying a run type as high or low time consuming.
-As part of this project, I have developed algorithms from scratch using Gradient Descent to predict average GPU Run Time and 
+As part of this project, I have developed algorithms from scratch using Gradient Descent method to predict average GPU Run Time and 
 classify a run process in GPU as high or low time consuming.
 
 The main focus of this project is to successfully create algorithms from scratch using Gradient Desent method for prediction and binary classfication. 
 
-In this project, we have performed various experimentations by varying the learning rate(α) and the threshold value for convergence and 
-have observed the changes in the performance of the algorithms both in prediction and classification. 
-Similarly, we have performed feature selection both by random selection and based on their importance as per our observations to 
-experiment on the changes in the prediction and classification performance and choose the best model with most significant features.
+In this project, we have performed various experimentations by varying the learning rate(α) and the threshold value for convergence. We 
+have observed the changes in the performance of the algorithms both in prediction and classification model.
+Similarly, we have performed feature selection both by random selection and based on their importance. The prediction and classification performance were further evaluated and the best model with most significant features was finalized. 
 
 ## Table of Contents
 
