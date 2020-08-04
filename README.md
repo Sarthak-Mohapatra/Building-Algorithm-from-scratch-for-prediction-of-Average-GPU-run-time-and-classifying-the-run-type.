@@ -9,8 +9,6 @@ have observed the changes in the performance of the algorithms both in predictio
 Similarly, we have performed feature selection both by random selection and based on their importance as per our observations to 
 experiment on the changes in the prediction and classification performance and choose the best model with most significant features.
 
-The dataset contains app details from Google Play Store till February 2019.
-
 ## Table of Contents
 
 * General Info
